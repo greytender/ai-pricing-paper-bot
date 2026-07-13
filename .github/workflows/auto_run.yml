@@ -1,0 +1,30 @@
+name: Auto Fetch Literature
+
+on:
+  schedule:
+    # 每天 UTC 16:00（北京时间 0:00）自动运行
+    - cron: '0 16 * * *'
+  workflow_dispatch:  # 允许手动触发
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - name: 检出仓库代码
+      uses: actions/checkout@v4
+
+    - name: 准备 Python 环境
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: 安装依赖
+      run: pip install -r requirements.txt
+
+    - name: 执行论文爬取脚本
+      env:
+        ZOTERO_API_KEY: ${{ secrets.ZOTERO_API_KEY }}
+        ZOTERO_USER_ID: ${{ secrets.ZOTERO_USER_ID }}
+        ZOTERO_COLLECTION_NAME: ${{ secrets.ZOTERO_COLLECTION_NAME }}
+        SEMANTIC_SCHOLAR_KEY: ${{ secrets.SEMANTIC_SCHOLAR_KEY }}
+      run: python main.py

@@ -1,0 +1,27 @@
+# 环境变量（禁止提交到 Git）
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 数据目录
+data/paper_cache.json
+data/fetch.log
+
+# OS
+.DS_Store
+Thumbs.db

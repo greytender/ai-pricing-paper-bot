@@ -5,17 +5,17 @@ on:
     # 每天凌晨 0:00 自动在云端偷偷运行一次 (全球标准时间 UTC)
     - cron: '0 0 * * *'
   workflow_dispatch:
-    # 允许你在网页上随时点击按钮“手动立刻触发”，方便我们现在进行测试
+    # 允许你在网页上随时点击按钮“手动立刻触发”
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
     - name: 检出仓库代码
-      uses: actions/checkout@v3
+      uses: actions/checkout@v6
 
     - name: 准备 Python 环境
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v6
       with:
         python-version: '3.10'
 
@@ -28,5 +28,5 @@ jobs:
         ZOTERO_API_KEY: ${{ secrets.ZOTERO_API_KEY }}
         ZOTERO_USER_ID: ${{ secrets.ZOTERO_USER_ID }}
         COLLECTION_ID: ${{ secrets.COLLECTION_ID }}
-        SEMANTIC_SCHOLAR_KEY: ${{ secrets.SEMANTIC_SCHOLAR_KEY }} # 将 SS 钥匙也传入运行环境
+        SEMANTIC_SCHOLAR_KEY: ${{ secrets.SEMANTIC_SCHOLAR_KEY }}
       run: python fetch_papers.py

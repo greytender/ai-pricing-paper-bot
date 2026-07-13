@@ -14,7 +14,7 @@ QUERY = '("AI product" OR "LLM" OR "SaaS" OR "generative AI") AND ("pricing" OR 
 def get_latest_papers():
     # 调用 Semantic Scholar 搜索接口
     current_year = datetime.now().year
-    url = f"https://api.semanticscholar.org/graph/v1/paper/search?query={QUERY}&year=2025-{current_year}&fields=title,abstract,authors,doi,url,year"
+    url = f"https://api.semanticscholar.org/graph/v1/paper/search?query={QUERY}&year=2020-{current_year}&fields=title,abstract,authors,doi,url,year"
     
     # 带上官方学术钥匙，从此享受免限速的高级通道待遇
     headers = {}

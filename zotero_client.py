@@ -296,6 +296,7 @@ def batch_upload_to_zotero(
 ) -> dict[str, int]:
     """
     批量上传论文到 Zotero，自动处理 Collection 查找/创建、DOI 去重。
+    优先使用直接指定的 ZOTERO_COLLECTION_KEY，否则按名称查找/创建。
 
     Args:
         papers: 论文列表
@@ -308,15 +309,19 @@ def batch_upload_to_zotero(
         logger.error("Zotero 配置缺失，跳过上传。请设置 ZOTERO_API_KEY 和 ZOTERO_USER_ID。")
         return {"success": 0, "skipped": len(papers), "failed": 0}
 
-    collection_name = collection_name or config.ZOTERO_COLLECTION_NAME
     stats: dict[str, int] = {"success": 0, "skipped": 0, "failed": 0}
 
-    # 1. 查找或创建 Collection
-    try:
-        collection_key = find_or_create_collection(collection_name)
-    except Exception as e:
-        logger.error("获取/创建 Collection 失败: %s", e)
-        return {"success": 0, "skipped": 0, "failed": len(papers)}
+    # 1. 获取 Collection key：优先使用直接指定的 key，否则按名称查找/创建
+    collection_key: str | None = config.ZOTERO_COLLECTION_KEY
+    if not collection_key:
+        collection_name = collection_name or config.ZOTERO_COLLECTION_NAME
+        try:
+            collection_key = find_or_create_collection(collection_name)
+        except Exception as e:
+            logger.error("获取/创建 Collection 失败: %s", e)
+            return {"success": 0, "skipped": 0, "failed": len(papers)}
+    else:
+        logger.info("使用指定的 Collection key: %s", collection_key)
 
     # 2. 获取已有 DOI，避免重复
     existing_dois = get_existing_dois_in_collection(collection_key)

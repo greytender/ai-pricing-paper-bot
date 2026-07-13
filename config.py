@@ -22,6 +22,7 @@ S2_BASE_URL: str = "https://api.semanticscholar.org/graph/v1"
 # ── Zotero ────────────────────────────────────────────────────────
 ZOTERO_API_KEY: str | None = os.getenv("ZOTERO_API_KEY")
 ZOTERO_USER_ID: str | None = os.getenv("ZOTERO_USER_ID")
+ZOTERO_COLLECTION_KEY: str | None = os.getenv("ZOTERO_COLLECTION_KEY")
 ZOTERO_COLLECTION_NAME: str = os.getenv("ZOTERO_COLLECTION_NAME", "AI Pricing - Game Theory")
 ZOTERO_BASE_URL: str = "https://api.zotero.org"
 

@@ -1,6 +1,7 @@
 """
 Semantic Scholar 论文检索模块
-通过多组关键词搜索论文，支持分页、去重、筛选和本地缓存。
+双通道检索：近期论文(2025+) + 经典高引文献（不限年份）
+顶刊/顶会白名单过滤，确保只保留高质量文献。
 """
 
 import time
@@ -17,7 +18,7 @@ logger = logging.getLogger(__name__)
 PAPER_FIELDS: str = (
     "paperId,title,abstract,year,authors,venue,citationCount,"
     "influentialCitationCount,externalIds,url,openAccessPdf,"
-    "publicationDate,fieldsOfStudy,journal,tldr"
+    "publicationDate,fieldsOfStudy,journal,tldr,publicationVenue"
 )
 
 
@@ -75,33 +76,41 @@ def _make_request(
     return None
 
 
-def search_papers_by_query(query: str) -> list[dict[str, Any]]:
+def search_papers_by_query(
+    query: str,
+    year_range: str = "",
+    max_papers: int | None = None,
+) -> list[dict[str, Any]]:
     """
     使用单个关键词在 Semantic Scholar 搜索论文。
-    自动分页直到满足 MAX_PAPERS_PER_QUERY 或结果耗尽。
+    自动分页直到满足上限或结果耗尽。
 
     Args:
         query: 搜索关键词
+        year_range: 年份过滤，如 "2025-2026"，空字符串表示不限
+        max_papers: 本组最大论文数（默认使用全局配置）
 
     Returns:
         论文字典列表
     """
+    cap: int = max_papers if max_papers is not None else config.MAX_PAPERS_PER_QUERY
     all_papers: list[dict[str, Any]] = []
     offset: int = 0
     total: int = 0
-    limit: int = min(100, config.MAX_PAPERS_PER_QUERY)  # API 单页上限 100
+    limit: int = min(100, cap)  # API 单页上限 100
 
     headers = _build_headers()
     url = f"{config.S2_BASE_URL}/paper/search"
 
-    while len(all_papers) < config.MAX_PAPERS_PER_QUERY:
+    while len(all_papers) < cap:
         params: dict[str, Any] = {
             "query": query,
             "fields": PAPER_FIELDS,
             "limit": limit,
             "offset": offset,
-            "year": config.YEAR_RANGE,
         }
+        if year_range:
+            params["year"] = year_range
 
         data = _make_request(url, params, headers)
         if data is None:
@@ -114,7 +123,7 @@ def search_papers_by_query(query: str) -> list[dict[str, Any]]:
             break
 
         all_papers.extend(batch)
-        total: int = data.get("total", 0)
+        total = data.get("total", 0)
 
         # 判断是否还有更多结果
         next_offset: int = data.get("next", offset + limit)
@@ -125,10 +134,10 @@ def search_papers_by_query(query: str) -> list[dict[str, Any]]:
         time.sleep(config.REQUEST_DELAY_SECONDS)
 
     logger.info("关键词 '%s' 获取 %d 篇论文 (总计 %d)。", query, len(all_papers), total)
-    return all_papers[: config.MAX_PAPERS_PER_QUERY]
+    return all_papers[:cap]
 
 
-def get_recommended_papers(paper_id: str, limit: int = 20) -> list[dict[str, Any]]:
+def get_recommended_papers(paper_id: str, limit: int = 10) -> list[dict[str, Any]]:
     """
     获取与指定论文相关的推荐论文（需要 Semantic Scholar API Key）。
 
@@ -171,6 +180,112 @@ def get_paper_details(paper_id: str) -> dict[str, Any] | None:
     params = {"fields": PAPER_FIELDS}
 
     return _make_request(url, params, headers)
+
+
+def _extract_venue_name(paper: dict[str, Any]) -> str:
+    """
+    从论文数据中提取所有可能的 venue 名称，统一小写返回。
+    """
+    # 优先级: publicationVenue.name > journal.name > venue
+    pub_venue: dict[str, Any] = paper.get("publicationVenue") or {}
+    if pub_venue.get("name"):
+        return pub_venue["name"].strip().lower()
+
+    journal_info: dict[str, Any] = paper.get("journal") or {}
+    if journal_info.get("name"):
+        return journal_info["name"].strip().lower()
+
+    venue: str = paper.get("venue") or ""
+    if venue:
+        return venue.strip().lower()
+
+    return ""
+
+
+def is_top_venue(paper: dict[str, Any]) -> bool:
+    """
+    判断论文是否发表于顶刊/顶会。
+    匹配逻辑：论文的 venue/journal 名称是否包含白名单中的关键词。
+
+    Args:
+        paper: 论文字典
+
+    Returns:
+        是否为顶刊/顶会论文
+    """
+    venue_name: str = _extract_venue_name(paper)
+    if not venue_name:
+        return False
+
+    for top_name in config.TOP_VENUES:
+        if top_name in venue_name:
+            return True
+
+    return False
+
+
+def filter_papers(papers: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """
+    筛选论文，必须满足全部基础条件 + 至少一条质量条件：
+
+    基础条件：
+    - 必须有摘要
+    - 必须有可下载的 PDF（openAccessPdf.url 存在）
+
+    质量条件（满足任一）：
+    1. 来自顶刊/顶会白名单
+    2. 有影响力引用数 >= 10（influentialCitationCount）
+    3. 经典文献且引用数 >= MIN_CITATIONS_CLASSIC
+
+    Args:
+        papers: 论文列表
+
+    Returns:
+        筛选后的论文列表
+    """
+    filtered: list[dict[str, Any]] = []
+    top_venue_count: int = 0
+    influential_count: int = 0
+    high_cite_count: int = 0
+    no_pdf_count: int = 0
+
+    for paper in papers:
+        # 基础条件：必须有摘要
+        if not paper.get("abstract"):
+            continue
+
+        # 基础条件：必须有可下载的 PDF
+        oa_pdf: dict[str, str] = paper.get("openAccessPdf") or {}
+        if not oa_pdf.get("url"):
+            no_pdf_count += 1
+            continue
+
+        # 质量判断 1: 顶刊/顶会
+        if is_top_venue(paper):
+            top_venue_count += 1
+            filtered.append(paper)
+            continue
+
+        # 质量判断 2: 有影响力引用数
+        influential: int = paper.get("influentialCitationCount", 0)
+        if influential >= 10:
+            influential_count += 1
+            filtered.append(paper)
+            continue
+
+        # 质量判断 3: 高引用（经典文献通道）
+        citations: int = paper.get("citationCount", 0)
+        if citations >= config.MIN_CITATIONS_CLASSIC:
+            high_cite_count += 1
+            filtered.append(paper)
+            continue
+
+    logger.info(
+        "论文筛选结果: 无PDF=%d, 顶刊/顶会=%d, 有影响力引用>=10=%d, 高引用>=%d=%d, 总通过=%d (总输入=%d)",
+        no_pdf_count, top_venue_count, influential_count, config.MIN_CITATIONS_CLASSIC,
+        high_cite_count, len(filtered), len(papers),
+    )
+    return filtered
 
 
 def deduplicate_papers(papers: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -238,65 +353,95 @@ def deduplicate_papers(papers: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return merged
 
 
-def filter_papers(papers: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """
-    筛选论文：过滤无摘要、低于最低引用数的论文。
-
-    Args:
-        papers: 论文列表
-
-    Returns:
-        筛选后的论文列表
-    """
-    filtered: list[dict[str, Any]] = []
-    for paper in papers:
-        # 必须有摘要
-        if not paper.get("abstract"):
-            continue
-        # 引用数过滤
-        if paper.get("citationCount", 0) < config.MIN_CITATIONS:
-            continue
-        filtered.append(paper)
-
-    logger.info("筛选前 %d 篇，筛选后 %d 篇。", len(papers), len(filtered))
-    return filtered
-
-
 def fetch_all_papers() -> list[dict[str, Any]]:
     """
-    执行完整的论文检索流程：
-    1. 逐个关键词搜索
-    2. 对高引论文获取推荐论文
-    3. 全量去重
-    4. 筛选
+    执行完整的论文检索流程（双通道，精要模式）：
+    通道 A — 近期论文（2025+）：精简关键词，宽泛检索
+    通道 B — 经典文献（不限年份）：更少关键词 + 高引用过滤 + 顶刊筛选
+
+    合并 → 去重 → 质量筛选 → 推荐扩展 → 最终去重 → 截取 Top N
 
     Returns:
-        最终的论文列表
+        最终的论文列表（最多 MAX_FINAL_PAPERS 篇）
     """
     all_papers: list[dict[str, Any]] = []
 
-    for query in config.SEARCH_QUERIES:
-        logger.info("正在搜索关键词: %s", query)
-        papers = search_papers_by_query(query)
+    # ── 通道 A: 近期论文 (2025+) ──────────────────────────────────
+    logger.info("=" * 50)
+    logger.info("通道 A: 近期论文检索 (年份: %s)", config.YEAR_RANGE_RECENT)
+    logger.info("=" * 50)
+    recent_count: int = 0
+    for query in config.SEARCH_QUERIES_RECENT:
+        if recent_count >= config.MAX_TOTAL_RECENT:
+            break
+        logger.info("搜索关键词: %s", query)
+        papers = search_papers_by_query(
+            query,
+            year_range=config.YEAR_RANGE_RECENT,
+            max_papers=min(config.MAX_PAPERS_PER_QUERY, config.MAX_TOTAL_RECENT - recent_count),
+        )
         all_papers.extend(papers)
+        recent_count += len(papers)
         time.sleep(config.REQUEST_DELAY_SECONDS)
 
-    # 对引用数 Top 5 的论文获取推荐
+    # ── 通道 B: 经典高引文献 ─────────────────────────────────────
+    logger.info("=" * 50)
+    logger.info("通道 B: 经典文献检索 (不限年份)")
+    logger.info("=" * 50)
+    classic_count: int = 0
+    for query in config.SEARCH_QUERIES_CLASSIC:
+        if classic_count >= config.MAX_TOTAL_CLASSIC:
+            break
+        logger.info("搜索关键词: %s", query)
+        papers = search_papers_by_query(
+            query,
+            year_range=config.YEAR_RANGE_CLASSIC,
+            max_papers=min(15, config.MAX_TOTAL_CLASSIC - classic_count),
+        )
+        all_papers.extend(papers)
+        classic_count += len(papers)
+        time.sleep(config.REQUEST_DELAY_SECONDS)
+
+    # ── 第一次去重 + 质量筛选 ────────────────────────────────────
+    logger.info("全量去重中...")
+    all_papers = deduplicate_papers(all_papers)
+
+    logger.info("顶刊/质量筛选中...")
+    all_papers = filter_papers(all_papers)
+
+    # ── 对 Top 3 高引论文获取推荐 ───────────────────────────────
+    logger.info("扩展推荐论文...")
     all_papers.sort(key=lambda p: p.get("citationCount", 0), reverse=True)
-    top_papers = all_papers[:5]
+    top_papers = all_papers[:3]
     for paper in top_papers:
         paper_id: str = paper.get("paperId", "")
         if paper_id:
-            recs = get_recommended_papers(paper_id, limit=10)
+            recs = get_recommended_papers(paper_id, limit=5)
             all_papers.extend(recs)
             time.sleep(config.REQUEST_DELAY_SECONDS)
 
-    # 去重 + 筛选
+    # ── 最终去重 + 筛选 + 截取 Top N ─────────────────────────────
     all_papers = deduplicate_papers(all_papers)
     all_papers = filter_papers(all_papers)
 
-    # 按引用数降序排列
+    # 按引用数降序排列，截取 Top N
     all_papers.sort(key=lambda p: p.get("citationCount", 0), reverse=True)
+    all_papers = all_papers[: config.MAX_FINAL_PAPERS]
 
-    logger.info("检索完成，共 %d 篇高质量论文。", len(all_papers))
+    # 标注来源通道
+    for paper in all_papers:
+        year: int = paper.get("year", 0)
+        if year >= 2025:
+            paper["_channel"] = "recent"
+        else:
+            paper["_channel"] = "classic"
+
+    logger.info("=" * 50)
+    logger.info("检索完成！共 %d 篇高质量论文（精要模式，上限 %d）",
+                len(all_papers), config.MAX_FINAL_PAPERS)
+    if all_papers:
+        recent = sum(1 for p in all_papers if p.get("_channel") == "recent")
+        classic = sum(1 for p in all_papers if p.get("_channel") == "classic")
+        logger.info("  近期 (2025+): %d 篇, 经典: %d 篇", recent, classic)
+    logger.info("=" * 50)
     return all_papers
